@@ -6,6 +6,7 @@ import 'dotenv/config';
 import { getAppConfig, listApps, DEFAULT_APP_ID, appRoot } from './app-registry.js';
 import { resolveAppContext, appIdForOrigin, APP_ID_HEADER, LEGACY_APP_HEADER } from './app-request.js';
 import { sendMail } from './mail-service.js';
+import { getFirebaseAuth } from './firebase-admin-auth.js';
 
 const { Pool } = pg;
 const PORT = Number(process.env.PORT || 10000);
@@ -298,9 +299,28 @@ async function main(req, res) {
       const e = email(body.email); if (!validEmail(e)) return sendJson(res, 400, { ok: false, error: 'Enter a valid email.' });
       const verification = await verifyOtp(appId, body.challengeId, e, body.otp);
       if (verification.purpose !== 'login') return sendJson(res, 400, { ok: false, error: 'OTP request mismatch.' });
+
+      let customToken = '';
+      if (appId === 'indoone') {
+        const auth = getFirebaseAuth(appId);
+        const user = await auth.getUserByEmail(e);
+        customToken = await auth.createCustomToken(user.uid, {
+          app_id: appId,
+          auth_method: 'email_otp',
+        });
+      }
+
       let welcomeSent = true;
       try { await mailWelcomeBack(appId, e, String(body.name || '').trim()); } catch (error) { welcomeSent = false; console.error('Welcome-back email failed:', error instanceof Error ? error.message : error); }
-      return sendJson(res, 200, { ok: true, verified: true, email: e, welcomeSent, appId });
+
+      return sendJson(res, 200, {
+        ok: true,
+        verified: true,
+        email: e,
+        welcomeSent,
+        appId,
+        ...(customToken ? { customToken } : {}),
+      });
     }
 
     if (url.pathname === '/api/auth/resend-otp' && req.method === 'POST') {

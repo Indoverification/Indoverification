@@ -5,8 +5,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import pg from 'pg';
 import 'dotenv/config';
-import { cert, getApps, initializeApp } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
+import { getFirebaseAuth } from './firebase-admin-auth.js';
 import { appRoot } from './app-registry.js';
 import { sendMail } from './mail-service.js';
 
@@ -36,99 +35,6 @@ const pool = new Pool({
 });
 
 let tablesReadyPromise;
-const firebaseAuthByApp = new Map();
-
-function sendJson(res, status, body) {
-  res.statusCode = status;
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-  res.end(JSON.stringify(body));
-}
-
-async function readBody(req) {
-  let raw = '';
-  for await (const chunk of req) {
-    raw += chunk;
-    if (raw.length > 1_000_000) throw new Error('Request too large');
-  }
-  if (!raw) return {};
-  try { return JSON.parse(raw); } catch { throw new Error('Invalid JSON'); }
-}
-
-function email(value) {
-  return String(value || '').normalize('NFKC').replace(/[\u0000-\u001F\u007F\u00A0\u200B-\u200D\u2060\uFEFF]/g, '').trim().toLowerCase();
-}
-function validEmail(value) { return /^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+$/i.test(email(value)); }
-function normalizeOtp(value) { return String(value || '').normalize('NFKC').replace(/[^0-9]/g, '').slice(0, 6); }
-function generateOtp() { return String(crypto.randomInt(100000, 1000000)); }
-function generateToken(bytes = 32) { return crypto.randomBytes(bytes).toString('hex'); }
-function hash(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
-function sameHash(a, b) {
-  const left = Buffer.from(String(a), 'hex');
-  const right = Buffer.from(String(b), 'hex');
-  return left.length === right.length && left.length > 0 && crypto.timingSafeEqual(left, right);
-}
-
-async function ensureRecoveryTables() {
-  if (!tablesReadyPromise) {
-    tablesReadyPromise = pool.query(`
-      CREATE TABLE IF NOT EXISTS forgot_password_otps (
-        challenge_id TEXT PRIMARY KEY,
-        app_id TEXT NOT NULL,
-        email TEXT NOT NULL,
-        code_hash TEXT NOT NULL,
-        sent_at TIMESTAMPTZ NOT NULL,
-        expires_at TIMESTAMPTZ NOT NULL,
-        attempts INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE INDEX IF NOT EXISTS forgot_password_otps_app_email_sent_idx
-        ON forgot_password_otps(app_id,email,sent_at DESC);
-      CREATE TABLE IF NOT EXISTS forgot_password_reset_tokens (
-        token_hash TEXT PRIMARY KEY,
-        app_id TEXT NOT NULL,
-        email TEXT NOT NULL,
-        uid TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL,
-        expires_at TIMESTAMPTZ NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS forgot_password_reset_tokens_app_email_idx
-        ON forgot_password_reset_tokens(app_id,email,expires_at);
-      DELETE FROM forgot_password_otps WHERE expires_at < NOW();
-      DELETE FROM forgot_password_reset_tokens WHERE expires_at < NOW();
-    `).then(() => true);
-  }
-  return tablesReadyPromise;
-}
-
-function getFirebaseAuth(appId = 'indoone') {
-  const normalizedAppId = String(appId || '').trim().toLowerCase();
-  if (normalizedAppId !== 'indoone') {
-    throw new Error('Firebase Admin recovery is not configured for this app.');
-  }
-
-  if (firebaseAuthByApp.has(normalizedAppId)) {
-    return firebaseAuthByApp.get(normalizedAppId);
-  }
-
-  const projectId = String(process.env.FIREBASE_INDOONE_PROJECT_ID || '').trim();
-  const clientEmail = String(process.env.FIREBASE_INDOONE_CLIENT_EMAIL || '').trim();
-  const privateKey = String(process.env.FIREBASE_INDOONE_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
-
-  if (!projectId || !clientEmail || !privateKey) {
-    throw new Error('Indoone Firebase Admin credentials are not configured on the recovery server.');
-  }
-
-  const appName = `indoone-recovery`;
-  const app = getApps().find(candidate => candidate.name === appName)
-    ?? initializeApp({
-        credential: cert({ projectId, clientEmail, privateKey })
-      }, appName);
-
-  const auth = getAuth(app);
-  firebaseAuthByApp.set(normalizedAppId, auth);
-  return auth;
-}
-
 function renderForgotPasswordOtp(code) {
   const templatePath = `${appRoot('indoone')}/templates/forgot-password-otp.html`;
   let html = fs.readFileSync(templatePath, 'utf8');
