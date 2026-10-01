@@ -20,7 +20,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install dependencies
         run: npm install
@@ -30,3 +29,9 @@ jobs:
 
       - name: App request isolation checks
         run: npm run test:app-request
+
+      - name: Server syntax checks
+        run: |
+          node --check src/server.js
+          node --check src/server-multi-app.js
+          node --check src/firebase-admin-auth.js
